@@ -419,32 +419,55 @@ def _ascii_cell(offset: int, byte: int, cmap: dict[int, Color],
 
 def main() -> None:
     ap = argparse.ArgumentParser(
-        description="TLV heuristic parser — xxd-style output with ANSI colours"
+        description="TLV heuristic parser — hex dump / value extraction"
     )
-    ap.add_argument(
-        "-m", "--mode",
-        choices=["overlap", "exclude"],
-        default="overlap",
-        help="Parse mode: overlap (default) or exclude consumed bytes",
-    )
-    ap.add_argument(
-        "-c", "--color",
-        choices=[m.value for m in ColorMode],
-        default=ColorMode.ALL.value,
-        help="Colouring: all (default), fg (foreground only), bg (background only), none",
-    )
-    ap.add_argument(
-        "--show-info",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Print TLV summary after the hex dump (default: true)",
-    )
+
+    def _add_mode_arg(p: argparse.ArgumentParser) -> None:
+        p.add_argument(
+            "-m", "--mode",
+            choices=["overlap", "exclude"],
+            default="exclude",
+            help="Parse mode: exclude (default) or overlap",
+        )
+
+    def _add_print_args(p: argparse.ArgumentParser) -> None:
+        _add_mode_arg(p)
+        p.add_argument(
+            "-c", "--color",
+            choices=[m.value for m in ColorMode],
+            default=ColorMode.ALL.value,
+            help="Colouring: all (default), fg/ bg/ none",
+        )
+        p.add_argument(
+            "--show-info",
+            action=argparse.BooleanOptionalAction,
+            default=True,
+            help="Print TLV summary after the hex dump (default: true)",
+        )
+
+    _add_print_args(ap)
+    sub = ap.add_subparsers(dest="subcmd")
+
+    p_print = sub.add_parser("print", help="Render xxd-style hex dump (default)")
+    _add_print_args(p_print)
+
+    p_dump = sub.add_parser("dump", help="Extract raw value bytes of a TLV")
+    _add_mode_arg(p_dump)
+    p_dump.add_argument("index", type=int, help="TLV index (0-based)")
+
     args = ap.parse_args()
 
     data = sys.stdin.buffer.read()
     if not data:
         return
 
+    if args.subcmd == "dump":
+        _cmd_dump(args, data)
+    else:
+        _cmd_print(args, data)
+
+
+def _cmd_print(args: argparse.Namespace, data: bytes) -> None:
     color_mode = ColorMode(args.color)
     tlvs = parse(data, mode=args.mode)
 
@@ -466,6 +489,20 @@ def main() -> None:
         info = tlv_info(tlvs, data)
         if info:
             print(info)
+
+
+def _cmd_dump(args: argparse.Namespace, data: bytes) -> None:
+    tlvs = parse(data, mode=args.mode)
+    if not tlvs:
+        print("No TLVs found", file=sys.stderr)
+        sys.exit(1)
+    if args.index < 0 or args.index >= len(tlvs):
+        print(f"TLV index {args.index} out of range (0–{len(tlvs) - 1})",
+              file=sys.stderr)
+        sys.exit(1)
+    tlv = tlvs[args.index]
+    value = data[tlv.len_end:tlv.value_end]
+    sys.stdout.buffer.write(value)
 
 
 if __name__ == "__main__":
