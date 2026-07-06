@@ -20,7 +20,6 @@ import sys
 import termios
 from collections.abc import Callable
 from dataclasses import dataclass
-from enum import Enum
 from functools import cache
 
 RESET = "\033[0m"
@@ -63,20 +62,6 @@ class AlphaColor:
 Color = TrueColor | AnsiColor | AlphaColor | None
 """Possible colour states: truecolour, ANSI index, alpha-blended, or default."""
 
-
-class ColorMode(Enum):
-    ALL  = "all"
-    FG   = "fg"
-    BG   = "bg"
-    NONE = "none"
-
-    @property
-    def use_bg(self) -> bool:
-        return self in (ColorMode.ALL, ColorMode.BG)
-
-    @property
-    def use_fg(self) -> bool:
-        return self in (ColorMode.ALL, ColorMode.FG)
 
 # ---------------------------------------------------------------------------
 #  Terminal background detection
@@ -162,49 +147,6 @@ def _parse_osc11_response(data: bytes) -> tuple[int, int, int] | None:
     if m:
         return int(m.group(1), 16), int(m.group(2), 16), int(m.group(3), 16)
     return None
-
-
-# ---------------------------------------------------------------------------
-#  Colour scheme
-# ---------------------------------------------------------------------------
-
-@dataclass(frozen=True)
-class ColorScheme:
-    """Base (unblended) colours for the three TLV fields.
-
-    Blending against the terminal background is deferred to render time
-    via :func:`_resolve_alpha`, which uses :func:`detect_terminal_background`
-    (cached — OSC 11 is queried at most once).
-    """
-
-    tag:    AlphaColor
-    length: AlphaColor
-    value:  AlphaColor
-
-    @classmethod
-    def default(cls) -> ColorScheme:
-        return cls(
-            tag    = AlphaColor(255, 0,   0,   0.2),
-            length = AlphaColor(255, 255, 0,   0.2),
-            value  = AlphaColor(0,   0,   255, 0.2),
-        )
-
-
-# ---------------------------------------------------------------------------
-#  Character display colour
-# ---------------------------------------------------------------------------
-
-def char_color(byte: int) -> Color:
-    """ANSI colour for the visual representation of a single byte."""
-    if 32 <= byte <= 126:
-        return AnsiColor(32)   # green — printable ASCII
-    if byte in (9, 10, 13):
-        return AnsiColor(33)   # yellow — whitespace
-    if byte == 0:
-        return AnsiColor(37)   # white — NUL
-    if byte == 255:
-        return AnsiColor(34)   # blue — 0xFF
-    return AnsiColor(31)       # red — other control chars
 
 
 # ---------------------------------------------------------------------------
@@ -434,8 +376,8 @@ def main() -> None:
         _add_mode_arg(p)
         p.add_argument(
             "-c", "--color",
-            choices=[m.value for m in ColorMode],
-            default=ColorMode.ALL.value,
+            choices=["all", "fg", "bg", "none"],
+            default="all",
             help="Colouring: all (default), fg/ bg/ none",
         )
         p.add_argument(
@@ -481,21 +423,28 @@ def main() -> None:
 
 
 def _cmd_print(args: argparse.Namespace, data: bytes) -> None:
-    color_mode = ColorMode(args.color)
     tlvs = parse(data, mode=args.mode)
 
-    if color_mode.use_bg:
-        scheme = ColorScheme.default()
-        palette = RenderPalette(
-            tag_bg  = scheme.tag,
-            len_bg  = scheme.length,
-            val_bg  = scheme.value,
-            char_fg = char_color if color_mode.use_fg else None,
-        )
-    else:
-        palette = RenderPalette(
-            char_fg = char_color if color_mode.use_fg else None,
-        )
+    palette = RenderPalette()
+    use_bg = args.color in ("all", "bg")
+    use_fg = args.color in ("all", "fg")
+    if use_bg:
+        palette.tag_bg = AlphaColor(255, 0,   0,   0.2)
+        palette.len_bg = AlphaColor(255, 255, 0,   0.2)
+        palette.val_bg = AlphaColor(0,   0,   255, 0.2)
+
+    if use_fg:
+        def char_color(byte: int) -> Color:
+            if 32 <= byte <= 126:
+                return AnsiColor(32)
+            if byte in (9, 10, 13):
+                return AnsiColor(33)
+            if byte == 0:
+                return AnsiColor(37)
+            if byte == 255:
+                return AnsiColor(34)
+            return AnsiColor(31)
+        palette.char_fg = char_color
 
     print(render_xxd(data, tlvs, palette))
     if args.show_info:
